@@ -4,21 +4,24 @@ import React, { useRef, useEffect, useState } from 'react';
 const Canvas = () => {
     const canvasRef = useRef(null);
     const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
-    const [clusters, setClusters] = useState([]);
-    const [frozenClusterIds, setFrozenClusterIds] = useState(new Set());
-    const [frozenAssignments, setFrozenAssignments] = useState({}); // clusterId -> number[]
-    const isDragging = useRef(false);
-    const draggingCoreId = useRef(null);
+    const [transformers, setTransformers] = useState([]);
+    const isDraggingBackground = useRef(false);
+    const draggingTransformerId = useRef(null);
     const clickStartPos = useRef({ x: 0, y: 0 });
     const lastMousePos = useRef({ x: 0, y: 0 });
-    const clickTimeoutRef = useRef(null);
-    const rectsRef = useRef([]);
+    const allTrackersRef = useRef([]);
     const polygonRef = useRef([]);
-    const currentAssignmentsRef = useRef([]);
     const roadsRef = useRef([
         { p1: { x: -1200, y: 0 }, p2: { x: 1200, y: 0 } },
         { p1: { x: 0, y: -1200 }, p2: { x: 0, y: 1200 } }
     ]);
+
+    const ASPECT_RATIO = 1 / 7;
+    const TRACKER_WIDTH = 12 / 1.7;
+    const TRACKER_HEIGHT = TRACKER_WIDTH / ASPECT_RATIO;
+    const TRANSFORMER_SIZE = 30;
+    const GAP = 2;
+    const ROAD_WIDTH = 25;
 
     const boundaryCoords = [
         [-72.4559521, 42.9074371], [-72.4559513, 42.9075], [-72.4508424, 42.9061169],
@@ -71,7 +74,7 @@ const Canvas = () => {
         return (uA >= 0 && uA <= 1 && uB >= 0 && uB <= 1);
     };
 
-    // Initialize polygon and rectangles
+    // Initialize polygon and trackers
     useEffect(() => {
         const minX = Math.min(...boundaryCoords.map(c => c[0]));
         const maxX = Math.max(...boundaryCoords.map(c => c[0]));
@@ -86,34 +89,28 @@ const Canvas = () => {
             y: (centerY - c[1]) * scale
         }));
 
-        const ASPECT_RATIO = 1 / 7;
-        const RECT_WIDTH = 12 / 1.7;
-        const RECT_HEIGHT = RECT_WIDTH / ASPECT_RATIO;
-        const GAP = 2;
-        const ROAD_WIDTH = 25;
-
-        const generateRectangles = () => {
-            const newRects = [];
+        const generateTrackers = () => {
+            const newTrackers = [];
             const bbMinX = Math.min(...polygonRef.current.map(p => p.x));
             const bbMaxX = Math.max(...polygonRef.current.map(p => p.x));
             const bbMinY = Math.min(...polygonRef.current.map(p => p.y));
             const bbMaxY = Math.max(...polygonRef.current.map(p => p.y));
 
-            const STEP_X = RECT_WIDTH + GAP;
-            const STEP_Y = RECT_HEIGHT + GAP;
+            const STEP_X = TRACKER_WIDTH + GAP;
+            const STEP_Y = TRACKER_HEIGHT + GAP;
 
-            for (let y = bbMinY; y <= bbMaxY - RECT_HEIGHT; y += STEP_Y) {
-                for (let x = bbMinX; x <= bbMaxX - RECT_WIDTH; x += STEP_X) {
-                    const newRect = { x, y, width: RECT_WIDTH, height: RECT_HEIGHT };
+            for (let y = bbMinY; y <= bbMaxY - TRACKER_HEIGHT; y += STEP_Y) {
+                for (let x = bbMinX; x <= bbMaxX - TRACKER_WIDTH; x += STEP_X) {
+                    const newTracker = { x, y, width: TRACKER_WIDTH, height: TRACKER_HEIGHT };
                     const corners = [
-                        { x: newRect.x, y: newRect.y },
-                        { x: newRect.x + newRect.width, y: newRect.y },
-                        { x: newRect.x + newRect.width, y: newRect.y + newRect.height },
-                        { x: newRect.x, y: newRect.y + newRect.height }
+                        { x: newTracker.x, y: newTracker.y },
+                        { x: newTracker.x + newTracker.width, y: newTracker.y },
+                        { x: newTracker.x + newTracker.width, y: newTracker.y + newTracker.height },
+                        { x: newTracker.x, y: newTracker.y + newTracker.height }
                     ];
 
                     if (corners.every(c => isPointInPolygon(c.x, c.y, polygonRef.current))) {
-                        const rectEdges = [
+                        const trackerEdges = [
                             [corners[0], corners[1]], [corners[1], corners[2]],
                             [corners[2], corners[3]], [corners[3], corners[0]]
                         ];
@@ -122,8 +119,8 @@ const Canvas = () => {
                         for (let i = 0; i < polygonRef.current.length; i++) {
                             const p1 = polygonRef.current[i];
                             const p2 = polygonRef.current[(i + 1) % polygonRef.current.length];
-                            for (const rEdge of rectEdges) {
-                                if (doSegmentsIntersect(p1, p2, rEdge[0], rEdge[1])) {
+                            for (const tEdge of trackerEdges) {
+                                if (doSegmentsIntersect(p1, p2, tEdge[0], tEdge[1])) {
                                     hasIntersection = true; break;
                                 }
                             }
@@ -134,8 +131,8 @@ const Canvas = () => {
 
                         let onRoad = false;
                         for (const road of roadsRef.current) {
-                            for (const rEdge of rectEdges) {
-                                if (doSegmentsIntersect(road.p1, road.p2, rEdge[0], rEdge[1])) {
+                            for (const tEdge of trackerEdges) {
+                                if (doSegmentsIntersect(road.p1, road.p2, tEdge[0], tEdge[1])) {
                                     onRoad = true; break;
                                 }
                             }
@@ -149,15 +146,129 @@ const Canvas = () => {
                             if (onRoad) break;
                         }
 
-                        if (!onRoad) newRects.push(newRect);
+                        if (!onRoad) newTrackers.push(newTracker);
                     }
                 }
             }
-            return newRects;
+            return newTrackers;
         };
 
-        rectsRef.current = generateRectangles();
+        allTrackersRef.current = generateTrackers();
     }, []);
+
+    const [selectedTfId, setSelectedTfId] = useState(null);
+    const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+    const [skipRemoveConfirm, setSkipRemoveConfirm] = useState(() => localStorage.getItem('skipRemoveConfirm') === 'true');
+    const [debouncedTransformers, setDebouncedTransformers] = useState([]);
+
+    useEffect(() => {
+        localStorage.setItem('skipRemoveConfirm', skipRemoveConfirm);
+    }, [skipRemoveConfirm]);
+
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.target.tagName === 'INPUT') return;
+
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTfId) {
+                if (skipRemoveConfirm) {
+                    const idToRemove = selectedTfId;
+                    setSelectedTfId(null);
+                    setTransformers(prev => prev.filter(tf => tf.id !== idToRemove));
+                } else {
+                    setShowRemoveConfirm(true);
+                }
+            } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && selectedTfId) {
+                const step = e.key === 'ArrowLeft' ? -1 : 1;
+                if (e.ctrlKey) {
+                    setTransformers(prev => prev.map(tf => {
+                        if (tf.id === selectedTfId) {
+                            const newVal = Math.max(1, Math.min(tf.blockWidthUnits + step, 40));
+                            return { ...tf, blockWidthUnits: newVal };
+                        }
+                        return tf;
+                    }));
+                } else if (e.shiftKey) {
+                    setTransformers(prev => prev.map(tf =>
+                        tf.id === selectedTfId ? { ...tf, x: tf.x + (step * 5) } : tf
+                    ));
+                } else {
+                    setTransformers(prev => prev.map(tf =>
+                        tf.id === selectedTfId ? { ...tf, hNudge: tf.hNudge + step } : tf
+                    ));
+                }
+            } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && selectedTfId) {
+                if (e.ctrlKey) {
+                    const step = e.key === 'ArrowUp' ? 1 : -1;
+                    setTransformers(prev => prev.map(tf => {
+                        if (tf.id === selectedTfId) {
+                            const newVal = Math.max(1, Math.min(tf.blockHeightUnits + step, 40));
+                            return { ...tf, blockHeightUnits: newVal };
+                        }
+                        return tf;
+                    }));
+                } else if (e.shiftKey) {
+                    const step = e.key === 'ArrowUp' ? -5 : 5;
+                    setTransformers(prev => prev.map(tf =>
+                        tf.id === selectedTfId ? { ...tf, y: tf.y + step } : tf
+                    ));
+                } else {
+                    const step = e.key === 'ArrowUp' ? -1 : 1;
+                    setTransformers(prev => prev.map(tf =>
+                        tf.id === selectedTfId ? { ...tf, vNudge: tf.vNudge + step } : tf
+                    ));
+                }
+            } else if (e.key === 'Tab') {
+                e.preventDefault();
+                if (transformers.length === 0) return;
+                const currentIndex = transformers.findIndex(tf => tf.id === selectedTfId);
+                let nextIndex;
+                if (e.shiftKey) {
+                    nextIndex = (currentIndex <= 0) ? transformers.length - 1 : currentIndex - 1;
+                } else {
+                    nextIndex = (currentIndex === -1 || currentIndex === transformers.length - 1) ? 0 : currentIndex + 1;
+                }
+                setSelectedTfId(transformers[nextIndex].id);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [selectedTfId, skipRemoveConfirm, transformers]);
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedTransformers(transformers);
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [transformers]);
+
+    // Calculate transformer counts for the UI using live state for instant feedback
+    const transformerCounts = {};
+    transformers.forEach(tf => transformerCounts[tf.id] = 0);
+
+    // We do a temporary pass to calculate counts for the UI rendering using live state
+    allTrackersRef.current.forEach(tracker => {
+        const rCenterX = tracker.x + tracker.width / 2;
+        const rCenterY = tracker.y + tracker.height / 2;
+        const rX1 = tracker.x, rY1 = tracker.y;
+        const rX2 = tracker.x + tracker.width, rY2 = tracker.y + tracker.height;
+
+        const isBlocked = transformers.some(tf => {
+            const tfX1 = tf.x - TRANSFORMER_SIZE / 2, tfY1 = tf.y - TRANSFORMER_SIZE / 2;
+            const tfX2 = tf.x + TRANSFORMER_SIZE / 2, tfY2 = tf.y + TRANSFORMER_SIZE / 2;
+            return !(rX2 < tfX1 || rX1 > tfX2 || rY2 < tfY1 || rY1 > tfY2);
+        });
+        if (isBlocked) return;
+
+        const assignedTf = transformers.find(tf => {
+            const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
+            const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
+            const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
+            const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+            return rCenterX >= bX1 && rCenterX <= bX1 + fullW &&
+                rCenterY >= bY1 && rCenterY <= bY1 + fullH;
+        });
+        if (assignedTf) transformerCounts[assignedTf.id]++;
+    });
 
     // Render loop
     useEffect(() => {
@@ -195,93 +306,93 @@ const Canvas = () => {
             ctx.closePath();
             ctx.stroke();
 
-            // 3. Draw Cluster Cores
-            clusters.forEach(cluster => {
-                ctx.fillStyle = cluster.color;
-                ctx.beginPath();
-                ctx.arc(cluster.x, cluster.y, 10 / transform.scale, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.strokeStyle = frozenClusterIds.has(cluster.id) ? 'gold' : 'white';
-                ctx.lineWidth = 3 / transform.scale;
-                ctx.stroke();
+            // 3. Draw Trackers (compute filtered and assigned trackers)
+            allTrackersRef.current.forEach((tracker) => {
+                const rX1 = tracker.x;
+                const rY1 = tracker.y;
+                const rX2 = tracker.x + tracker.width;
+                const rY2 = tracker.y + tracker.height;
+                const rCenterX = tracker.x + tracker.width / 2;
+                const rCenterY = tracker.y + tracker.height / 2;
 
-                if (frozenClusterIds.has(cluster.id)) {
-                    ctx.font = `${10 / transform.scale}px Arial`;
-                    ctx.fillStyle = 'gold';
-                    ctx.textAlign = 'center';
-                    ctx.fillText('🔒', cluster.x, cluster.y - 12 / transform.scale);
-                }
-            });
-
-            // 4. Draw Rectangles colored by clusters with capacity limit (Global Proximity Sorting)
-            const TARGET_CAPACITY = 100;
-            const assignments = new Array(rectsRef.current.length).fill(null);
-            const clusterOccupancy = {};
-            const coreMap = {};
-
-            clusters.forEach(c => {
-                clusterOccupancy[c.id] = 0;
-                coreMap[c.coreId || c.id] = c;
-            });
-
-            // First, apply frozen assignments
-            Object.entries(frozenAssignments).forEach(([clusterId, boxIndices]) => {
-                const cid = Number(clusterId);
-                const representativeCore = clusters.find(c => c.id === cid);
-                if (representativeCore) {
-                    boxIndices.forEach(idx => {
-                        if (idx < assignments.length) {
-                            assignments[idx] = representativeCore;
-                            clusterOccupancy[cid]++;
-                        }
-                    });
-                }
-            });
-
-            if (clusters.length > 0) {
-                const allPairs = [];
-                rectsRef.current.forEach((rect, boxIdx) => {
-                    // Only assign if not already assignments (not frozen)
-                    if (assignments[boxIdx] === null) {
-                        clusters.forEach(core => {
-                            const dx = (rect.x + rect.width / 2) - core.x;
-                            const dy = (rect.y + rect.height / 2) - core.y;
-                            const distSq = dx * dx + dy * dy;
-                            allPairs.push({ boxIdx, coreId: core.coreId || core.id, clusterId: core.id, distSq });
-                        });
-                    }
+                // Check if blocked (hidden by transformer footprint)
+                const isBlocked = transformers.some(tf => {
+                    const tfX1 = tf.x - TRANSFORMER_SIZE / 2;
+                    const tfY1 = tf.y - TRANSFORMER_SIZE / 2;
+                    const tfX2 = tf.x + TRANSFORMER_SIZE / 2;
+                    const tfY2 = tf.y + TRANSFORMER_SIZE / 2;
+                    return !(rX2 < tfX1 || rX1 > tfX2 || rY2 < tfY1 || rY1 > tfY2);
                 });
 
-                // Sort all possible assignments by distance
-                allPairs.sort((a, b) => a.distSq - b.distSq);
+                if (isBlocked) return;
 
-                // Assign remaining boxes in order of absolute proximity
-                for (const pair of allPairs) {
-                    if (assignments[pair.boxIdx] === null && (!clusterOccupancy[pair.clusterId] || clusterOccupancy[pair.clusterId] < TARGET_CAPACITY)) {
-                        assignments[pair.boxIdx] = coreMap[pair.coreId];
-                        clusterOccupancy[pair.clusterId] = (clusterOccupancy[pair.clusterId] || 0) + 1;
-                    }
-                }
-            }
+                // Find block assignment
+                const assignedTf = transformers.find(tf => {
+                    const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
+                    const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
+                    const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
+                    const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+                    return rCenterX >= bX1 && rCenterX <= bX1 + fullW &&
+                        rCenterY >= bY1 && rCenterY <= bY1 + fullH;
+                });
 
-            currentAssignmentsRef.current = assignments;
-
-            rectsRef.current.forEach((rect, i) => {
-                const assignedCore = assignments[i];
-
-                if (assignedCore) {
-                    ctx.fillStyle = assignedCore.color;
-                    ctx.globalAlpha = 0.3;
-                    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+                if (assignedTf) {
+                    ctx.fillStyle = assignedTf.color;
+                    ctx.globalAlpha = 0.4;
+                    ctx.fillRect(tracker.x, tracker.y, tracker.width, tracker.height);
                     ctx.globalAlpha = 1.0;
-                    ctx.strokeStyle = assignedCore.color;
+                    ctx.strokeStyle = assignedTf.strokeColor;
                 } else {
                     ctx.strokeStyle = 'black';
                 }
 
                 ctx.lineWidth = 1.5 / transform.scale;
-                ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+                ctx.strokeRect(tracker.x, tracker.y, tracker.width, tracker.height);
             });
+
+            // 4. Draw Transformers
+            transformers.forEach(tf => {
+                ctx.fillStyle = tf.color;
+                ctx.fillRect(tf.x - TRANSFORMER_SIZE / 2, tf.y - TRANSFORMER_SIZE / 2, TRANSFORMER_SIZE, TRANSFORMER_SIZE);
+                ctx.strokeStyle = tf.strokeColor;
+                ctx.lineWidth = 2 / transform.scale;
+                ctx.strokeRect(tf.x - TRANSFORMER_SIZE / 2, tf.y - TRANSFORMER_SIZE / 2, TRANSFORMER_SIZE, TRANSFORMER_SIZE);
+
+                // Draw label
+                const count = transformerCounts[tf.id] || 0;
+                ctx.fillStyle = 'white';
+                const fontSize = 14 / transform.scale;
+                ctx.font = `bold ${fontSize}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.shadowColor = 'black';
+                ctx.shadowBlur = 4;
+                ctx.fillText(count.toString(), tf.x, tf.y);
+                ctx.shadowBlur = 0;
+            });
+
+            // 5. Draw bounding box for selected transformer
+            if (selectedTfId) {
+                const tf = transformers.find(t => t.id === selectedTfId);
+                if (tf) {
+                    const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
+                    const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
+                    const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
+                    const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+
+                    ctx.strokeStyle = tf.strokeColor;
+                    ctx.setLineDash([8 / transform.scale, 4 / transform.scale]);
+                    ctx.lineWidth = 2 / transform.scale;
+                    ctx.strokeRect(bX1, bY1, fullW, fullH);
+                    ctx.setLineDash([]);
+
+                    // Optional: subtle fill to make the area more obvious
+                    ctx.fillStyle = tf.color;
+                    ctx.globalAlpha = 0.05;
+                    ctx.fillRect(bX1, bY1, fullW, fullH);
+                    ctx.globalAlpha = 1.0;
+                }
+            }
         };
 
         const handleResize = () => {
@@ -294,7 +405,7 @@ const Canvas = () => {
         window.addEventListener('resize', handleResize);
         handleResize();
         return () => window.removeEventListener('resize', handleResize);
-    }, [transform, clusters, frozenClusterIds, frozenAssignments]);
+    }, [transform, transformers, selectedTfId]);
 
     const handleWheel = (e) => {
         e.preventDefault();
@@ -323,239 +434,367 @@ const Canvas = () => {
         const worldX = (mouseX - (canvas.width / 2 + transform.x)) / transform.scale;
         const worldY = (mouseY - (canvas.height / 2 + transform.y)) / transform.scale;
 
-        const coreIndex = clusters.findIndex(c => {
-            const d = Math.sqrt((c.x - worldX) ** 2 + (c.y - worldY) ** 2);
-            return d < 12 / transform.scale;
+        const clickedTransformer = transformers.find(tf => {
+            const tfX1 = tf.x - TRANSFORMER_SIZE / 2;
+            const tfY1 = tf.y - TRANSFORMER_SIZE / 2;
+            const tfX2 = tf.x + TRANSFORMER_SIZE / 2;
+            const tfY2 = tf.y + TRANSFORMER_SIZE / 2;
+            return worldX >= tfX1 && worldX <= tfX2 && worldY >= tfY1 && worldY <= tfY2;
         });
 
-        if (coreIndex !== -1) {
-            const clusterId = clusters[coreIndex].id;
-            if (!frozenClusterIds.has(clusterId)) {
-                draggingCoreId.current = clusters[coreIndex].coreId || clusters[coreIndex].id;
-            } else {
-                isDragging.current = true;
-            }
+        if (clickedTransformer) {
+            draggingTransformerId.current = clickedTransformer.id;
+            setSelectedTfId(clickedTransformer.id);
         } else {
-            isDragging.current = true;
+            // Check if click is inside any block's bounding box (including gaps between trackers)
+            let targetTf = debouncedTransformers.find(tf => {
+                const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
+                const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
+                const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
+                const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+                return worldX >= bX1 && worldX <= bX1 + fullW &&
+                    worldY >= bY1 && worldY <= bY1 + fullH;
+            });
+
+            // If not in a block bounds, check if click is on a tracker physically coverered by a device
+            if (!targetTf) {
+                const hitTracker = allTrackersRef.current.find(tr =>
+                    worldX >= tr.x && worldX <= tr.x + tr.width &&
+                    worldY >= tr.y && worldY <= tr.y + tr.height
+                );
+
+                if (hitTracker) {
+                    targetTf = transformers.find(tf => {
+                        const tfX1 = tf.x - TRANSFORMER_SIZE / 2, tfY1 = tf.y - TRANSFORMER_SIZE / 2;
+                        const tfX2 = tf.x + TRANSFORMER_SIZE / 2, tfY2 = tf.y + TRANSFORMER_SIZE / 2;
+                        const trX2 = hitTracker.x + hitTracker.width, trY2 = hitTracker.y + hitTracker.height;
+                        return !(trX2 < tfX1 || hitTracker.x > tfX2 || trY2 < tfY1 || hitTracker.y > tfY2);
+                    });
+                }
+            }
+
+            if (targetTf) {
+                setSelectedTfId(targetTf.id);
+            } else {
+                isDraggingBackground.current = true;
+            }
         }
 
-        lastMousePos.current = { x: e.clientX, y: e.clientY };
         clickStartPos.current = { x: e.clientX, y: e.clientY };
+        lastMousePos.current = { x: e.clientX, y: e.clientY };
     };
 
     const handleMouseUp = (e) => {
-        const wasDraggingCore = draggingCoreId.current !== null;
-        draggingCoreId.current = null;
+        const wasDraggingTf = draggingTransformerId.current !== null;
 
-        if (isDragging.current || wasDraggingCore) {
+        if (!wasDraggingTf && isDraggingBackground.current) {
             const dx = e.clientX - clickStartPos.current.x;
             const dy = e.clientY - clickStartPos.current.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
-            if (dist < 5 && !wasDraggingCore) {
+            if (dist < 5) {
+                setSelectedTfId(null);
                 const canvas = canvasRef.current;
-                if (!canvas) return;
-                const rect = canvas.getBoundingClientRect();
-                const mouseX = e.clientX - rect.left;
-                const mouseY = e.clientY - rect.top;
+                if (canvas) {
+                    const rect = canvas.getBoundingClientRect();
+                    const mouseX = e.clientX - rect.left;
+                    const mouseY = e.clientY - rect.top;
+                    const worldX = (mouseX - (canvas.width / 2 + transform.x)) / transform.scale;
+                    const worldY = (mouseY - (canvas.height / 2 + transform.y)) / transform.scale;
 
-                const worldX = (mouseX - (canvas.width / 2 + transform.x)) / transform.scale;
-                const worldY = (mouseY - (canvas.height / 2 + transform.y)) / transform.scale;
+                    const hue = (transformers.length * 137.5) % 360;
+                    const color = `hsla(${hue}, 70%, 50%, 0.7)`;
+                    const strokeColor = `hsl(${hue}, 70%, 30%)`;
 
-                const isOverCore = clusters.some(c => {
-                    const d = Math.sqrt((c.x - worldX) ** 2 + (c.y - worldY) ** 2);
-                    return d < 12 / transform.scale;
-                });
-
-                if (clickTimeoutRef.current) {
-                    clearTimeout(clickTimeoutRef.current);
-                    clickTimeoutRef.current = null;
-                } else if (!isOverCore) {
-                    clickTimeoutRef.current = setTimeout(() => {
-                        let minDistToBox = 10; // Proximity threshold in world units
-                        let existingClusterId = null;
-                        let existingClusterColor = null;
-
-                        rectsRef.current.forEach((r, i) => {
-                            const closestX = Math.max(r.x, Math.min(worldX, r.x + r.width));
-                            const closestY = Math.max(r.y, Math.min(worldY, r.y + r.height));
-                            const dx = worldX - closestX;
-                            const dy = worldY - closestY;
-                            const dist = Math.sqrt(dx * dx + dy * dy);
-
-                            if (dist < minDistToBox && currentAssignmentsRef.current[i]) {
-                                minDistToBox = dist;
-                                existingClusterId = currentAssignmentsRef.current[i].id;
-                                existingClusterColor = currentAssignmentsRef.current[i].color;
-                            }
-                        });
-
-                        if (existingClusterId) {
-                            setClusters(prev => [...prev, {
-                                x: worldX, y: worldY,
-                                id: existingClusterId,
-                                color: existingClusterColor,
-                                coreId: Date.now()
-                            }]);
-                        } else {
-                            // Find a hue that is distinct from existing clusters
-                            let hue = Math.floor(Math.random() * 360);
-                            const existingHues = Array.from(new Set(clusters.map(c => {
-                                const m = c.color.match(/hsl\((\d+)/);
-                                return m ? parseInt(m[1]) : null;
-                            }))).filter(h => h !== null);
-
-                            // Try up to 20 times to find a hue at least 20 degrees away
-                            for (let i = 0; i < 20; i++) {
-                                const isDistant = existingHues.every(h => {
-                                    const diff = Math.abs(h - hue);
-                                    return diff > 20 && diff < 340;
-                                });
-                                if (isDistant) break;
-                                hue = Math.floor(Math.random() * 360);
-                            }
-
-                            const color = `hsl(${hue}, 70%, 50%)`;
-                            setClusters(prev => [...prev, {
-                                x: worldX, y: worldY,
-                                id: Date.now(),
-                                color,
-                                coreId: Date.now()
-                            }]);
-                        }
-                        clickTimeoutRef.current = null;
-                    }, 250);
+                    const newId = Date.now();
+                    const newTf = {
+                        id: newId,
+                        x: worldX,
+                        y: worldY,
+                        color,
+                        strokeColor,
+                        blockWidthUnits: 25,
+                        blockHeightUnits: 4,
+                        hNudge: 0,
+                        vNudge: 0
+                    };
+                    setTransformers(prev => [...prev, newTf]);
+                    setSelectedTfId(newId);
                 }
             }
         }
-        isDragging.current = false;
-    };
 
-    const handleDoubleClick = (e) => {
-        if (clickTimeoutRef.current) {
-            clearTimeout(clickTimeoutRef.current);
-            clickTimeoutRef.current = null;
-        }
-
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-
-        const worldX = (mouseX - (canvas.width / 2 + transform.x)) / transform.scale;
-        const worldY = (mouseY - (canvas.height / 2 + transform.y)) / transform.scale;
-
-        // Check if on core -> Remove logic
-        const coreIdx = clusters.findIndex(c => {
-            const d = Math.sqrt((c.x - worldX) ** 2 + (c.y - worldY) ** 2);
-            return d < 12 / transform.scale;
-        });
-
-        if (coreIdx !== -1) {
-            const clusterId = clusters[coreIdx].id;
-            setClusters(prev => {
-                const newClusters = prev.filter((_, i) => i !== coreIdx);
-                // If the whole cluster is gone, unfreeze it
-                if (!newClusters.some(c => c.id === clusterId)) {
-                    setFrozenClusterIds(f => {
-                        const n = new Set(f);
-                        n.delete(clusterId);
-                        return n;
-                    });
-                    setFrozenAssignments(f => {
-                        const n = { ...f };
-                        delete n[clusterId];
-                        return n;
-                    });
-                }
-                return newClusters;
-            });
-            return;
-        }
-
-        // Check if on or near an existing cluster (box) -> Freeze/Unfreeze
-        let minDistToBox = 10;
-        let clickedBoxIdx = -1;
-        rectsRef.current.forEach((r, i) => {
-            const closestX = Math.max(r.x, Math.min(worldX, r.x + r.width));
-            const closestY = Math.max(r.y, Math.min(worldY, r.y + r.height));
-            const dx = worldX - closestX;
-            const dy = worldY - closestY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (dist < minDistToBox && currentAssignmentsRef.current[i]) {
-                minDistToBox = dist;
-                clickedBoxIdx = i;
-            }
-        });
-
-        if (clickedBoxIdx !== -1) {
-            const assigned = currentAssignmentsRef.current[clickedBoxIdx];
-            if (assigned) {
-                const clusterId = assigned.id;
-                setFrozenClusterIds(prev => {
-                    const newSet = new Set(prev);
-                    if (newSet.has(clusterId)) {
-                        newSet.delete(clusterId);
-                        setFrozenAssignments(f => {
-                            const n = { ...f };
-                            delete n[clusterId];
-                            return n;
-                        });
-                    } else {
-                        newSet.add(clusterId);
-                        // Freeze current box assignments for this cluster
-                        const boxIndices = [];
-                        currentAssignmentsRef.current.forEach((a, idx) => {
-                            if (a && a.id === clusterId) boxIndices.push(idx);
-                        });
-                        setFrozenAssignments(f => ({ ...f, [clusterId]: boxIndices }));
-                    }
-                    return newSet;
-                });
-            }
-        }
+        isDraggingBackground.current = false;
+        draggingTransformerId.current = null;
     };
 
     const handleMouseMove = (e) => {
-        if (draggingCoreId.current) {
-            const dx = (e.clientX - lastMousePos.current.x) / transform.scale;
-            const dy = (e.clientY - lastMousePos.current.y) / transform.scale;
-            setClusters(prev => prev.map(c =>
-                (c.coreId || c.id) === draggingCoreId.current ? { ...c, x: c.x + dx, y: c.y + dy } : c
-            ));
-            lastMousePos.current = { x: e.clientX, y: e.clientY };
-            return;
-        }
+        const screenDx = e.clientX - lastMousePos.current.x;
+        const screenDy = e.clientY - lastMousePos.current.y;
+        const worldDx = screenDx / transform.scale;
+        const worldDy = screenDy / transform.scale;
 
-        if (!isDragging.current) return;
-        const dx = e.clientX - lastMousePos.current.x;
-        const dy = e.clientY - lastMousePos.current.y;
-        setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+        if (draggingTransformerId.current) {
+            setTransformers(prev => prev.map(tf =>
+                tf.id === draggingTransformerId.current
+                    ? { ...tf, x: tf.x + worldDx, y: tf.y + worldDy }
+                    : tf
+            ));
+        } else if (isDraggingBackground.current) {
+            setTransform(prev => ({
+                ...prev,
+                x: prev.x + screenDx,
+                y: prev.y + screenDy
+            }));
+        }
         lastMousePos.current = { x: e.clientX, y: e.clientY };
     };
 
     const getCursorStyle = () => {
-        if (draggingCoreId.current || isDragging.current) return 'grabbing';
+        if (draggingTransformerId.current || isDraggingBackground.current) return 'grabbing';
         return 'grab';
     };
+
+    const selectedTf = transformers.find(tf => tf.id === selectedTfId);
 
     return (
         <div
             className="canvas-container"
-            style={{ width: '100%', height: '100vh', overflow: 'hidden', cursor: getCursorStyle() }}
+            style={{ width: '100%', height: '100vh', overflow: 'hidden', cursor: getCursorStyle(), position: 'relative' }}
             onWheel={handleWheel}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
-            onDoubleClick={handleDoubleClick}
-            onMouseLeave={() => {
-                isDragging.current = false;
-                draggingCoreId.current = null;
-            }}
         >
             <canvas ref={canvasRef} style={{ display: 'block' }} />
+
+            {selectedTf && (
+                <div
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onWheel={(e) => e.stopPropagation()}
+                    style={{
+                        position: 'absolute', top: '20px', right: '20px', width: 'max-content', minWidth: '220px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.85)', backdropFilter: 'blur(12px)',
+                        borderRadius: '16px', boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
+                        padding: '16px', border: '1px solid rgba(255, 255, 255, 0.3)',
+                        fontFamily: 'system-ui, -apple-system, sans-serif', color: '#1a1a1a',
+                        zIndex: 1000, animation: 'slideIn 0.3s ease-out',
+                        display: 'flex', flexDirection: 'column', gap: '12px',
+                        whiteSpace: 'nowrap'
+                    }}>
+                    <style>{`
+                        @keyframes slideIn {
+                            from { transform: translateX(100%); opacity: 0; }
+                            to { transform: translateX(0); opacity: 1; }
+                        }
+                    `}</style>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '16px', height: '16px', backgroundColor: selectedTf.color, borderRadius: '4px', border: `1px solid ${selectedTf.strokeColor}` }} />
+                            <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>
+                                {(() => {
+                                    const hueMatch = selectedTf.color.match(/hsla?\((\d+)/);
+                                    const hue = hueMatch ? parseInt(hueMatch[1]) : 0;
+                                    if (hue >= 330 || hue < 20) return 'Red';
+                                    if (hue >= 20 && hue < 50) return 'Orange';
+                                    if (hue >= 50 && hue < 80) return 'Yellow';
+                                    if (hue >= 80 && hue < 160) return 'Green';
+                                    if (hue >= 160 && hue < 200) return 'Cyan';
+                                    if (hue >= 200 && hue < 260) return 'Blue';
+                                    if (hue >= 260 && hue < 330) return 'Purple';
+                                })()} Block <span style={{ color: '#d97706', fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.02em' }}>(Tab / Shift+Tab)</span>
+                            </span>
+                        </div>
+                        <button onClick={(e) => { e.stopPropagation(); setSelectedTfId(null); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.25rem', color: '#666' }}>&times;</button>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                        <span style={{ color: '#666' }}>Trackers:</span>
+                        <span style={{ fontWeight: 700 }}>{transformerCounts[selectedTf.id] || 0}</span>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '1px solid rgba(0,0,0,0.05)', paddingTop: '12px' }}>
+                        <label style={{ fontSize: '0.7rem', fontWeight: 800, color: '#333', letterSpacing: '0.05em' }}>BLOCK SETTINGS</label>
+
+
+                        {(() => {
+                            const dbTf = debouncedTransformers.find(tf => tf.id === selectedTfId) || selectedTf;
+                            return (
+                                <>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                                            <label style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#999', fontWeight: 700 }}>
+                                                Horizontal Pinning <span style={{ color: '#d97706' }}>(<span style={{ fontSize: '0.7rem', fontWeight: 800 }}>◀</span> / <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>▶</span>)</span>
+                                            </label>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min={-Math.floor(dbTf.blockWidthUnits / 2) - 10}
+                                            max={Math.ceil(dbTf.blockWidthUnits / 2) + 10}
+                                            value={selectedTf.hNudge}
+                                            onChange={(e) => {
+                                                const val = parseInt(e.target.value);
+                                                setTransformers(prev => prev.map(tf => tf.id === selectedTfId ? { ...tf, hNudge: val } : tf));
+                                            }}
+                                            style={{ width: '100%', cursor: 'pointer', accentColor: '#1a1a1a' }}
+                                        />
+                                    </div>
+
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                                            <label style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#999', fontWeight: 700 }}>
+                                                Vertical Pinning <span style={{ color: '#d97706' }}>(<span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▲</span> / <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▼</span>)</span>
+                                            </label>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min={-Math.floor(dbTf.blockHeightUnits / 2) - 1}
+                                            max={Math.ceil(dbTf.blockHeightUnits / 2) + 1}
+                                            value={selectedTf.vNudge}
+                                            onChange={(e) => {
+                                                const val = parseInt(e.target.value);
+                                                setTransformers(prev => prev.map(tf => tf.id === selectedTfId ? { ...tf, vNudge: val } : tf));
+                                            }}
+                                            style={{ width: '100%', cursor: 'pointer', accentColor: '#1a1a1a' }}
+                                        />
+                                    </div>
+                                </>
+                            );
+                        })()}
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#999', fontWeight: 700 }}>
+                                    Width <span style={{ color: '#d97706' }}>(Ctrl + <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>◀</span> / <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>▶</span>)</span>
+                                </label>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#1a1a1a' }}>{selectedTf.blockWidthUnits}</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="1"
+                                max="40"
+                                value={selectedTf.blockWidthUnits}
+                                onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 1;
+                                    setTransformers(prev => prev.map(tf => tf.id === selectedTfId ? { ...tf, blockWidthUnits: val } : tf));
+                                }}
+                                style={{ width: '100%', cursor: 'pointer', accentColor: '#1a1a1a' }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#999', fontWeight: 700 }}>
+                                    Height <span style={{ color: '#d97706' }}>(Ctrl + <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▲</span> / <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▼</span>)</span>
+                                </label>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#1a1a1a' }}>{selectedTf.blockHeightUnits}</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="1"
+                                max="20"
+                                value={selectedTf.blockHeightUnits}
+                                onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 1;
+                                    setTransformers(prev => prev.map(tf => tf.id === selectedTfId ? { ...tf, blockHeightUnits: val } : tf));
+                                }}
+                                style={{ width: '100%', cursor: 'pointer', accentColor: '#1a1a1a' }}
+                            />
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' }}>
+                            <label style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#999', fontWeight: 700 }}>
+                                Transformer Position <span style={{ color: '#d97706' }}>(Shift + <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>◀</span> / <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>▶</span> / <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▲</span> / <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▼</span>)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid #fee2e2', paddingTop: '12px', marginTop: '4px' }}>
+                        <label style={{ fontSize: '0.7rem', fontWeight: 800, color: '#991b1b', letterSpacing: '0.05em' }}>DANGER ZONE</label>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (skipRemoveConfirm) {
+                                    const idToRemove = selectedTfId;
+                                    setSelectedTfId(null);
+                                    setTransformers(prev => prev.filter(tf => tf.id !== idToRemove));
+                                } else {
+                                    setShowRemoveConfirm(true);
+                                }
+                            }}
+                            style={{
+                                width: '100%', padding: '10px', borderRadius: '10px', border: '1px solid #fecaca',
+                                backgroundColor: '#fef2f2', color: '#991b1b', fontWeight: 600, fontSize: '0.8rem',
+                                cursor: 'pointer', transition: 'all 0.2s'
+                            }}
+                            onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#fee2e2'; }}
+                            onMouseOut={(e) => { e.currentTarget.style.backgroundColor = '#fef2f2'; }}
+                        >
+                            Remove Block <span style={{ color: '#f87171', opacity: 0.8 }}>(Del)</span>
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {showRemoveConfirm && (
+                <div
+                    onMouseDown={(e) => e.stopPropagation()}
+                    style={{
+                        position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
+                        backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
+                        display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000
+                    }}
+                >
+                    <div style={{
+                        width: '320px', backgroundColor: 'white', borderRadius: '20px', padding: '24px',
+                        boxShadow: '0 20px 50px rgba(0,0,0,0.2)', border: '1px solid rgba(0,0,0,0.05)',
+                        animation: 'popIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)'
+                    }}>
+                        <style>{`
+                            @keyframes popIn {
+                                from { transform: scale(0.9); opacity: 0; }
+                                to { transform: scale(1); opacity: 1; }
+                            }
+                        `}</style>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '1.25rem', color: '#1a1a1a', fontWeight: 700 }}>Remove Block?</h3>
+                        <p style={{ margin: '0 0 20px 0', fontSize: '0.9rem', color: '#666', lineHeight: '1.5' }}>
+                            Are you sure you want to remove this transformer block? This action cannot be undone.
+                        </p>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '24px', cursor: 'pointer' }} onClick={() => setSkipRemoveConfirm(!skipRemoveConfirm)}>
+                            <input
+                                type="checkbox"
+                                checked={skipRemoveConfirm}
+                                onChange={(e) => { }} // State handled by parent div onClick
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ cursor: 'pointer' }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: '#666', userSelect: 'none' }}>Don't ask me again</span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '12px' }}>
+                            <button
+                                onClick={() => setShowRemoveConfirm(false)}
+                                style={{
+                                    flex: 1, padding: '12px', borderRadius: '12px', border: '1px solid #ddd',
+                                    backgroundColor: 'white', color: '#666', fontWeight: 600, cursor: 'pointer'
+                                }}
+                            >Cancel</button>
+                            <button
+                                onClick={() => {
+                                    const idToRemove = selectedTfId;
+                                    setSelectedTfId(null);
+                                    setTransformers(prev => prev.filter(tf => tf.id !== idToRemove));
+                                    setShowRemoveConfirm(false);
+                                }}
+                                style={{
+                                    flex: 1, padding: '12px', borderRadius: '12px', border: 'none',
+                                    backgroundColor: '#991b1b', color: 'white', fontWeight: 600, cursor: 'pointer'
+                                }}
+                            >Remove</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
