@@ -11,6 +11,7 @@ const Canvas = () => {
     const lastMousePos = useRef({ x: 0, y: 0 });
     const allTrackersRef = useRef([]);
     const polygonRef = useRef([]);
+    const keysPressed = useRef(new Set());
     const roadsRef = useRef([
         { p1: { x: -1200, y: 0 }, p2: { x: 1200, y: 0 } },
         { p1: { x: 0, y: -1200 }, p2: { x: 0, y: 1200 } }
@@ -161,6 +162,41 @@ const Canvas = () => {
     const [skipRemoveConfirm, setSkipRemoveConfirm] = useState(() => localStorage.getItem('skipRemoveConfirm') === 'true');
     const [debouncedTransformers, setDebouncedTransformers] = useState([]);
 
+    const handleAddBlock = (worldX, worldY) => {
+        let x = worldX;
+        let y = worldY;
+
+        // If coordinates aren't provided (e.g., from button click), place at center of view
+        if (x === undefined || y === undefined) {
+            const canvas = canvasRef.current;
+            if (canvas) {
+                x = -transform.x / transform.scale;
+                y = -transform.y / transform.scale;
+            } else {
+                x = 0; y = 0;
+            }
+        }
+
+        const hue = (transformers.length * 137.5) % 360;
+        const color = `hsla(${hue}, 70%, 50%, 0.7)`;
+        const strokeColor = `hsl(${hue}, 70%, 30%)`;
+
+        const newId = Date.now();
+        const newTf = {
+            id: newId,
+            x,
+            y,
+            color,
+            strokeColor,
+            blockWidthUnits: 25,
+            blockHeightUnits: 4,
+            hNudge: 0,
+            vNudge: 0
+        };
+        setTransformers(prev => [...prev, newTf]);
+        setSelectedTfId(newId);
+    };
+
     useEffect(() => {
         localStorage.setItem('skipRemoveConfirm', skipRemoveConfirm);
     }, [skipRemoveConfirm]);
@@ -168,6 +204,7 @@ const Canvas = () => {
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (e.target.tagName === 'INPUT') return;
+            keysPressed.current.add(e.key);
 
             if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTfId) {
                 if (skipRemoveConfirm) {
@@ -177,44 +214,40 @@ const Canvas = () => {
                 } else {
                     setShowRemoveConfirm(true);
                 }
-            } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && selectedTfId) {
-                const step = e.key === 'ArrowLeft' ? -1 : 1;
-                if (e.ctrlKey) {
+            } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && selectedTfId) {
+                const isCtrl = e.ctrlKey;
+                const isShift = e.shiftKey;
+
+                // Determine composite deltas
+                let dx = 0;
+                let dy = 0;
+                if (keysPressed.current.has('ArrowLeft')) dx -= 1;
+                if (keysPressed.current.has('ArrowRight')) dx += 1;
+                if (keysPressed.current.has('ArrowUp')) dy -= 1;
+                if (keysPressed.current.has('ArrowDown')) dy += 1;
+
+                if (isCtrl) {
+                    // Resize logic
                     setTransformers(prev => prev.map(tf => {
                         if (tf.id === selectedTfId) {
-                            const newVal = Math.max(1, Math.min(tf.blockWidthUnits + step, 40));
-                            return { ...tf, blockWidthUnits: newVal };
+                            const newW = Math.max(5, Math.min(tf.blockWidthUnits + (dx || 0), 80));
+                            // For vertical resize, use reverse step logic: Up increases height in this app's context? 
+                            // Current logic: ArrowUp (step 1) -> increases height. 
+                            // Our dy is -1 for ArrowUp. So we use -dy.
+                            const newH = Math.max(1, Math.min(tf.blockHeightUnits - (dy || 0), 12));
+                            return { ...tf, blockWidthUnits: newW, blockHeightUnits: newH };
                         }
                         return tf;
                     }));
-                } else if (e.shiftKey) {
+                } else if (isShift) {
+                    // Position movement
                     setTransformers(prev => prev.map(tf =>
-                        tf.id === selectedTfId ? { ...tf, x: tf.x + (step * 5) } : tf
+                        tf.id === selectedTfId ? { ...tf, x: tf.x + (dx * 5), y: tf.y + (dy * 5) } : tf
                     ));
                 } else {
+                    // Nudge
                     setTransformers(prev => prev.map(tf =>
-                        tf.id === selectedTfId ? { ...tf, hNudge: tf.hNudge + step } : tf
-                    ));
-                }
-            } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && selectedTfId) {
-                if (e.ctrlKey) {
-                    const step = e.key === 'ArrowUp' ? 1 : -1;
-                    setTransformers(prev => prev.map(tf => {
-                        if (tf.id === selectedTfId) {
-                            const newVal = Math.max(1, Math.min(tf.blockHeightUnits + step, 40));
-                            return { ...tf, blockHeightUnits: newVal };
-                        }
-                        return tf;
-                    }));
-                } else if (e.shiftKey) {
-                    const step = e.key === 'ArrowUp' ? -5 : 5;
-                    setTransformers(prev => prev.map(tf =>
-                        tf.id === selectedTfId ? { ...tf, y: tf.y + step } : tf
-                    ));
-                } else {
-                    const step = e.key === 'ArrowUp' ? -1 : 1;
-                    setTransformers(prev => prev.map(tf =>
-                        tf.id === selectedTfId ? { ...tf, vNudge: tf.vNudge + step } : tf
+                        tf.id === selectedTfId ? { ...tf, hNudge: tf.hNudge + dx, vNudge: tf.vNudge + dy } : tf
                     ));
                 }
             } else if (e.key === 'Tab') {
@@ -228,10 +261,21 @@ const Canvas = () => {
                     nextIndex = (currentIndex === -1 || currentIndex === transformers.length - 1) ? 0 : currentIndex + 1;
                 }
                 setSelectedTfId(transformers[nextIndex].id);
+            } else if (e.key === 'Enter') {
+                handleAddBlock();
             }
         };
+
+        const handleKeyUp = (e) => {
+            keysPressed.current.delete(e.key);
+        };
+
         window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
     }, [selectedTfId, skipRemoveConfirm, transformers]);
 
     useEffect(() => {
@@ -263,7 +307,7 @@ const Canvas = () => {
             const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
             const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
             const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
-            const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+            const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_WIDTH + GAP));
             return rCenterX >= bX1 && rCenterX <= bX1 + fullW &&
                 rCenterY >= bY1 && rCenterY <= bY1 + fullH;
         });
@@ -331,7 +375,7 @@ const Canvas = () => {
                     const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
                     const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
                     const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
-                    const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+                    const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_WIDTH + GAP));
                     return rCenterX >= bX1 && rCenterX <= bX1 + fullW &&
                         rCenterY >= bY1 && rCenterY <= bY1 + fullH;
                 });
@@ -378,7 +422,7 @@ const Canvas = () => {
                     const fullW = tf.blockWidthUnits * (TRACKER_WIDTH + GAP);
                     const fullH = tf.blockHeightUnits * (TRACKER_HEIGHT + GAP);
                     const bX1 = tf.x - fullW / 2 + (tf.hNudge * (TRACKER_WIDTH + GAP));
-                    const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_HEIGHT + GAP));
+                    const bY1 = tf.y - fullH / 2 + (tf.vNudge * (TRACKER_WIDTH + GAP));
 
                     ctx.strokeStyle = tf.strokeColor;
                     ctx.setLineDash([8 / transform.scale, 4 / transform.scale]);
@@ -497,29 +541,9 @@ const Canvas = () => {
                 const canvas = canvasRef.current;
                 if (canvas) {
                     const rect = canvas.getBoundingClientRect();
-                    const mouseX = e.clientX - rect.left;
-                    const mouseY = e.clientY - rect.top;
-                    const worldX = (mouseX - (canvas.width / 2 + transform.x)) / transform.scale;
-                    const worldY = (mouseY - (canvas.height / 2 + transform.y)) / transform.scale;
-
-                    const hue = (transformers.length * 137.5) % 360;
-                    const color = `hsla(${hue}, 70%, 50%, 0.7)`;
-                    const strokeColor = `hsl(${hue}, 70%, 30%)`;
-
-                    const newId = Date.now();
-                    const newTf = {
-                        id: newId,
-                        x: worldX,
-                        y: worldY,
-                        color,
-                        strokeColor,
-                        blockWidthUnits: 25,
-                        blockHeightUnits: 4,
-                        hNudge: 0,
-                        vNudge: 0
-                    };
-                    setTransformers(prev => [...prev, newTf]);
-                    setSelectedTfId(newId);
+                    const worldX = (e.clientX - rect.left - (canvas.width / 2 + transform.x)) / transform.scale;
+                    const worldY = (e.clientY - rect.top - (canvas.height / 2 + transform.y)) / transform.scale;
+                    handleAddBlock(worldX, worldY);
                 }
             }
         }
@@ -648,8 +672,8 @@ const Canvas = () => {
                                         </div>
                                         <input
                                             type="range"
-                                            min={-Math.floor(dbTf.blockHeightUnits / 2) - 1}
-                                            max={Math.ceil(dbTf.blockHeightUnits / 2) + 1}
+                                            min={-Math.floor(dbTf.blockHeightUnits / 2) - 10}
+                                            max={Math.ceil(dbTf.blockHeightUnits / 2) + 10}
                                             value={selectedTf.vNudge}
                                             onChange={(e) => {
                                                 const val = parseInt(e.target.value);
@@ -671,11 +695,11 @@ const Canvas = () => {
                             </div>
                             <input
                                 type="range"
-                                min="1"
-                                max="40"
+                                min="5"
+                                max="80"
                                 value={selectedTf.blockWidthUnits}
                                 onChange={(e) => {
-                                    const val = parseInt(e.target.value) || 1;
+                                    const val = parseInt(e.target.value) || 5;
                                     setTransformers(prev => prev.map(tf => tf.id === selectedTfId ? { ...tf, blockWidthUnits: val } : tf));
                                 }}
                                 style={{ width: '100%', cursor: 'pointer', accentColor: '#1a1a1a' }}
@@ -691,7 +715,7 @@ const Canvas = () => {
                             <input
                                 type="range"
                                 min="1"
-                                max="20"
+                                max="12"
                                 value={selectedTf.blockHeightUnits}
                                 onChange={(e) => {
                                     const val = parseInt(e.target.value) || 1;
@@ -706,6 +730,22 @@ const Canvas = () => {
                                 Transformer Position <span style={{ color: '#d97706' }}>(Shift + <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>◀</span> / <span style={{ fontSize: '0.7rem', fontWeight: 800 }}>▶</span> / <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▲</span> / <span style={{ fontSize: '0.85rem', fontWeight: 800 }}>▼</span>)</span>
                             </label>
                         </div>
+
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleAddBlock();
+                            }}
+                            style={{
+                                width: '100%', padding: '10px', borderRadius: '10px', border: '1px solid #e2e8f0',
+                                backgroundColor: '#f8fafc', color: '#475569', fontWeight: 600, fontSize: '0.8rem',
+                                cursor: 'pointer', transition: 'all 0.2s', marginTop: '8px'
+                            }}
+                            onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#f1f5f9'; }}
+                            onMouseOut={(e) => { e.currentTarget.style.backgroundColor = '#f8fafc'; }}
+                        >
+                            Add New Block <span style={{ color: '#d97706', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.02em' }}>(Enter)</span>
+                        </button>
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid #fee2e2', paddingTop: '12px', marginTop: '4px' }}>
