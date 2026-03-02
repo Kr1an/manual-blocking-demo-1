@@ -329,7 +329,12 @@ const Canvas = () => {
         });
 
         if (coreIndex !== -1) {
-            draggingCoreId.current = clusters[coreIndex].coreId || clusters[coreIndex].id;
+            const clusterId = clusters[coreIndex].id;
+            if (!frozenClusterIds.has(clusterId)) {
+                draggingCoreId.current = clusters[coreIndex].coreId || clusters[coreIndex].id;
+            } else {
+                isDragging.current = true;
+            }
         } else {
             isDragging.current = true;
         }
@@ -469,10 +474,18 @@ const Canvas = () => {
             return;
         }
 
-        // Check if on an existing cluster (box) -> Freeze/Unfreeze
+        // Check if on or near an existing cluster (box) -> Freeze/Unfreeze
+        let minDistToBox = 10;
         let clickedBoxIdx = -1;
         rectsRef.current.forEach((r, i) => {
-            if (worldX >= r.x && worldX <= r.x + r.width && worldY >= r.y && worldY <= r.y + r.height) {
+            const closestX = Math.max(r.x, Math.min(worldX, r.x + r.width));
+            const closestY = Math.max(r.y, Math.min(worldY, r.y + r.height));
+            const dx = worldX - closestX;
+            const dy = worldY - closestY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < minDistToBox && currentAssignmentsRef.current[i]) {
+                minDistToBox = dist;
                 clickedBoxIdx = i;
             }
         });
